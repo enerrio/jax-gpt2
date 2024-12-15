@@ -1,7 +1,5 @@
 import json
-from typing import Optional
 import pandas as pd
-import numpy as np
 import equinox as eqx
 from rich.progress import (
     Progress,
@@ -11,11 +9,8 @@ from rich.progress import (
     TaskProgressColumn,
     Column,
 )
-import matplotlib.pyplot as plt
-from matplotlib.ticker import MaxNLocator
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from scipy import stats
 
 sz = "124M"
 loss_baseline = {
