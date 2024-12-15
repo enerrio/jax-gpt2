@@ -4,7 +4,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-from jaxtyping import Array, Int, Float, Bool, Key, PRNGKeyArray
+from jaxtyping import Array, PyTree, Int, Float, Bool, Key, PRNGKeyArray
 
 
 def key_split_allowing_none(
@@ -15,6 +15,86 @@ def key_split_allowing_none(
         return key, None
     else:
         return jr.split(key)
+
+
+def normal_init(
+    key: PRNGKeyArray,
+    shape: tuple[int, int],
+    dtype: jnp.dtype,
+    mean: float = 0.0,
+    std: float = 0.02,
+) -> Array:
+    return mean + std * jr.normal(key, shape=shape, dtype=dtype)
+
+
+def zero_init(shape: tuple[int], dtype: jnp.dtype) -> Array:
+    return jnp.zeros(shape, dtype=dtype)
+
+
+def reinit_model_params(
+    model: eqx.Module, dtype: jnp.dtype, key: PRNGKeyArray
+) -> eqx.Module:
+    """Custom weight initialization."""
+    # Split keys for each category
+    key_tok, key_pos, key_linear = jr.split(key, 3)
+
+    # Token embedding: normal(0,0.02)
+    model = eqx.tree_at(
+        lambda m: m.shared.pytree[0].weight,
+        model,
+        normal_init(
+            key=key_tok,
+            shape=model.shared.pytree[0].weight.shape,
+            dtype=dtype,
+            mean=0.0,
+            std=0.02,
+        ),
+    )
+
+    # Positional embedding: normal(0,0.01)
+    model = eqx.tree_at(
+        lambda m: m.pos_embed,
+        model,
+        normal_init(
+            key=key_pos, shape=model.pos_embed.shape, dtype=dtype, mean=0.0, std=0.01
+        ),
+    )
+
+    # Linear layer weights: normal(0,0.02)
+    is_linear = lambda x: isinstance(x, eqx.nn.Linear)
+    linear_layers = [
+        x for x in jax.tree.leaves(model, is_leaf=is_linear) if is_linear(x)
+    ]
+    w_shapes = [l.weight.shape for l in linear_layers[1:]]  # ignore shared node
+    b_shapes = [l.bias.shape for l in linear_layers if l.bias is not None]
+    w_keys = jr.split(key_linear, len(w_shapes))
+    new_weights = [
+        normal_init(k, s, dtype, 0.0, 0.02) for k, s in zip(w_keys, w_shapes)
+    ]
+    # bias should be 0
+    new_biases = [
+        zero_init(s, dtype) for s in b_shapes
+    ]  # TODO: replace w/ jnp.zeros_like
+
+    model = eqx.tree_at(
+        lambda m: [
+            x.weight for x in jax.tree.leaves(m, is_leaf=is_linear) if is_linear(x)
+        ][
+            1:
+        ],  # ignore shared node
+        model,
+        new_weights,
+    )
+    model = eqx.tree_at(
+        lambda m: [
+            x.bias
+            for x in jax.tree.leaves(m, is_leaf=is_linear)
+            if is_linear(x) and x.bias is not None
+        ],
+        model,
+        new_biases,
+    )
+    return model
 
 
 class MultiHeadedAttention(eqx.Module):
@@ -115,12 +195,12 @@ class TransformerBlock(eqx.Module):
     ln2: eqx.nn.LayerNorm
     drop: eqx.nn.Dropout
 
-    def __init__(self, cfg: dict[str, int | float | bool], key: PRNGKeyArray):
+    def __init__(self, cfg: dict[str, int | float | bool], dtype, key: PRNGKeyArray):
         key1, key2 = jr.split(key)
         self.attn = MultiHeadedAttention(cfg, key1)
         self.mlp = MLP(cfg, key2)
-        self.ln1 = eqx.nn.LayerNorm(cfg["emb_dim"])
-        self.ln2 = eqx.nn.LayerNorm(cfg["emb_dim"])
+        self.ln1 = eqx.nn.LayerNorm(cfg["emb_dim"], dtype=dtype)
+        self.ln2 = eqx.nn.LayerNorm(cfg["emb_dim"], dtype=dtype)
         self.drop = eqx.nn.Dropout(cfg["drop_rate"])
 
     def __call__(
@@ -152,7 +232,7 @@ class GPTModel(eqx.Module):
     trf_blocks: list[TransformerBlock]
     final_norm: eqx.nn.LayerNorm
 
-    def __init__(self, cfg: dict[str, int | float | bool], key: PRNGKeyArray):
+    def __init__(self, cfg: dict[str, int | float | bool], dtype: jnp.dtype, key: PRNGKeyArray):
         key1, key2, key3, key4 = jr.split(key, 4)
         tok_embed = eqx.nn.Embedding(cfg["vocab_size"], cfg["emb_dim"], key=key1)
         self.pos_embed = eqx.nn.Embedding(
@@ -160,9 +240,9 @@ class GPTModel(eqx.Module):
         ).weight
         self.drop_emb = eqx.nn.Dropout(cfg["drop_rate"])
         self.trf_blocks = [
-            TransformerBlock(cfg, keyn) for keyn in jr.split(key3, cfg["n_layers"])
+            TransformerBlock(cfg, dtype, keyn) for keyn in jr.split(key3, cfg["n_layers"])
         ]
-        self.final_norm = eqx.nn.LayerNorm(cfg["emb_dim"])
+        self.final_norm = eqx.nn.LayerNorm(cfg["emb_dim"], dtype=dtype)
         out_head = eqx.nn.Linear(
             cfg["emb_dim"], cfg["vocab_size"], use_bias=False, key=key4
         )
@@ -194,3 +274,65 @@ class GPTModel(eqx.Module):
             x = block(x, inference=inference, key=subkey_trf)
         x = jax.vmap(self.final_norm)(x)
         return jax.vmap(out_head)(x)
+
+
+if __name__ == "__main__":
+    import equinox as eqx
+    import jax.random as jr
+    import jax
+    from rich import print
+    from config import GPT_CONFIG
+    from gpt.model import GPTModel, reinit_model_params
+
+    key = jr.key(21)
+    a = eqx.nn.Linear(40, 22, key=key)
+    print(a.weight.mean(), a.weight.std())
+    cfg = GPT_CONFIG["small"]
+    cfg.update({"seq_len": 256})
+    model = GPTModel(cfg, key)
+    # Token embedding: normal(0,0.02)
+    print(model.shared.pytree[0].weight.mean(), model.shared.pytree[0].weight.std())
+    # Positional embedding: normal(0,0.01)
+    print(model.pos_embed.mean(), model.pos_embed.std())
+    print(
+        model.trf_blocks[0].mlp.layers[0].weight.mean(),
+        model.trf_blocks[0].mlp.layers[0].weight.std(),
+    )
+    # Linear layer weights: normal(0,0.02)
+    print(
+        model.trf_blocks[0].mlp.layers[0].bias.mean(),
+        model.trf_blocks[0].mlp.layers[0].bias.std(),
+    )
+    print(
+        model.trf_blocks[-1].mlp.layers[0].weight.mean(),
+        model.trf_blocks[-1].mlp.layers[0].weight.std(),
+    )
+    print(
+        model.trf_blocks[-1].mlp.layers[0].bias.mean(),
+        model.trf_blocks[-1].mlp.layers[0].bias.std(),
+    )
+    print(model.final_norm.weight.mean(), model.final_norm.weight.std())
+
+    model = reinit_model_params(model, key)
+    # Token embedding: normal(0,0.02)
+    print(model.shared.pytree[0].weight.mean(), model.shared.pytree[0].weight.std())
+    # Positional embedding: normal(0,0.01)
+    print(model.pos_embed.mean(), model.pos_embed.std())
+    # Linear layer weights: normal(0,0.02)
+    print(
+        model.trf_blocks[0].mlp.layers[0].weight.mean(),
+        model.trf_blocks[0].mlp.layers[0].weight.std(),
+    )
+    print(
+        model.trf_blocks[0].mlp.layers[0].bias.mean(),
+        model.trf_blocks[0].mlp.layers[0].bias.std(),
+    )
+    print(
+        model.trf_blocks[-1].mlp.layers[0].weight.mean(),
+        model.trf_blocks[-1].mlp.layers[0].weight.std(),
+    )
+    print(
+        model.trf_blocks[-1].mlp.layers[0].bias.mean(),
+        model.trf_blocks[-1].mlp.layers[0].bias.std(),
+    )
+    print(model.final_norm.weight.mean(), model.final_norm.weight.std())

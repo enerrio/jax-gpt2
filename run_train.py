@@ -3,12 +3,13 @@ import time
 import argparse
 from functools import partial
 import jax
+import jax.numpy as jnp
 import jax.random as jr
 import equinox as eqx
 import optax
 from config import GPT_CONFIG
 from gpt.logger import setup_logger
-from gpt.model import GPTModel
+from gpt.model import GPTModel, reinit_model_params
 from gpt.train import train
 from gpt.utils import save
 from gpt.data import load_data
@@ -55,8 +56,9 @@ def main(args=None) -> None:
     )
     parser.add_argument(
         "--dtype",
-        type=str,
+        type=jnp.dtype,
         default="float32",
+        choices=["float16", "bfloat16", "float32"],
         help="Data type for model weights",
     )
     parser.add_argument(
@@ -74,8 +76,9 @@ def main(args=None) -> None:
     parser.add_argument("--exp_name", type=str, required=True)
     args = parser.parse_args(args)
 
-    os.makedirs(args.exp_name, exist_ok=True)
-    logfile = os.path.join(args.exp_name, f"train_log_{args.exp_name}.jsonl")
+    logdir = os.path.join("results", args.exp_name)
+    os.makedirs(logdir, exist_ok=True)
+    logfile = os.path.join(logdir, f"train_log_{args.exp_name}.jsonl")
     logger = setup_logger(log_file=logfile)
     logger.info(f"Logging training info to {logfile}")
 
@@ -98,8 +101,10 @@ def main(args=None) -> None:
     logger.info(f"Number of batches in val dataloader: {len(val_dataloader)}")
 
     key = jr.key(21)
+    logger.info(f"Creating model with dype: {args.dtype}")
     model_key, train_key = jr.split(key)
-    model = GPTModel(model_config, model_key)
+    model = GPTModel(model_config, args.dtype, model_key)
+    model = reinit_model_params(model, args.dtype, model_key)
 
     end_value = args.lr * args.decay_percentage
     lr_scheduler = optax.schedules.warmup_cosine_decay_schedule(
@@ -117,10 +122,8 @@ def main(args=None) -> None:
     # model_str = eqx.tree_pformat(model)
     # logger.info(model_str)
 
-    # Test out what initial loss should look like
-    # import jax.numpy as jnp
+    ## Test out what initial loss should look like
     # import sys
-
     # initial_loss = -jnp.log(1.0 / model_config["vocab_size"])
     # logger.info(f"Initial loss should be around: {initial_loss:.3f}")
     # key, *sample_keys = jr.split(train_key, train_dataloader.batch_size + 1)
@@ -129,10 +132,12 @@ def main(args=None) -> None:
     # logits = jax.vmap(model, in_axes=(0, None, 0))(x_sample, False, sample_keys)
     # loss = optax.losses.softmax_cross_entropy_with_integer_labels(
     #     logits, y_sample
-    # ).mean()
-    # logits_mean = jnp.mean(logits)
-    # logits_std = jnp.std(logits)
-    # logger.info(f"Logits mean: {logits_mean:.3f}, std: {logits_std:.3f}")
+    # ).mean().item()
+    # logits_mean = jnp.mean(logits).item()
+    # logits_std = jnp.std(logits).item()
+    # logger.info(
+    #     f"Logits mean: {logits_mean:.3f}, std: {logits_std:.3f}, dtype: {logits.dtype}"
+    # )
     # logger.info(f"Actual initial loss is: {loss:.3f}")
     # min_label = jnp.min(y_sample)
     # max_label = jnp.max(y_sample)
@@ -140,6 +145,21 @@ def main(args=None) -> None:
     # assert (
     #     min_label >= 0 and max_label < model_config["vocab_size"]
     # ), "Labels out of range."
+    # logger.info(f"> tok_embed dtype: {model.shared.pytree[0].weight.dtype}")
+    # logger.info(f"> pos_embed dtype: {model.pos_embed.dtype}")
+    # logger.info(f"> trf_block ln weight dtype: {model.trf_blocks[0].ln1.weight.dtype}")
+    # logger.info(f"> trf_block ln bias dtype: {model.trf_blocks[0].ln1.bias.dtype}")
+    # logger.info(
+    #     f"> mlp linear weight dtype: {model.trf_blocks[0].mlp.layers[0].weight.dtype}"
+    # )
+    # logger.info(
+    #     f"> mlp linear bias dtype: {model.trf_blocks[0].mlp.layers[0].bias.dtype}"
+    # )
+    # logger.info(f"> attn W_q dtype: {model.trf_blocks[0].attn.W_q.weight.dtype}")
+    # logger.info(
+    #     f"> attn out_proj dtype: {model.trf_blocks[0].attn.out_proj.weight.dtype}"
+    # )
+    # logger.info(f"> final_norm dtype: {model.final_norm.weight.dtype}")
     # sys.exit(0)
 
     logger.info("Training...")
@@ -158,7 +178,7 @@ def main(args=None) -> None:
     logger.info(f"Total training time: {time.time()-start:.2f} seconds.")
     logger.info("Complete!")
     save(f"{ckpt_dir}-{args.nb_steps}-final.eqx", model)
-    logger.info("Final model saved to disk: ")
+    logger.info(f"Final model saved to disk: {ckpt_dir}-{args.nb_steps}-final.eqx")
 
 
 if __name__ == "__main__":
