@@ -1,6 +1,7 @@
 __pycache__
 .pytest_cache
 .vscode
+.DS_Store
 Notes.md
 *.png
 *.ipynb
