@@ -61,8 +61,8 @@ def reinit_model_params(
     linear_layers = [
         x for x in jax.tree.leaves(model, is_leaf=is_linear) if is_linear(x)
     ]
-    w_shapes = [l.weight.shape for l in linear_layers[1:]]  # ignore shared node
-    b_shapes = [l.bias.shape for l in linear_layers if l.bias is not None]
+    w_shapes = [layer.weight.shape for layer in linear_layers[1:]]  # ignore shared node
+    b_shapes = [layer.bias.shape for layer in linear_layers if layer.bias is not None]
     w_keys = jr.split(key_linear, len(w_shapes))
     new_weights = [
         normal_init(k, s, dtype, 0.0, 0.02) for k, s in zip(w_keys, w_shapes)
