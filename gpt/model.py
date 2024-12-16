@@ -70,7 +70,7 @@ def reinit_model_params(
     # bias should be 0
     new_biases = [
         jnp.zeros(s, dtype=dtype) for s in b_shapes
-    ]  # TODO: replace w/ jnp.zeros_like
+    ]
 
     model = eqx.tree_at(
         lambda m: [
