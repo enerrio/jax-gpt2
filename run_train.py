@@ -76,9 +76,9 @@ def main(args=None) -> None:
     parser.add_argument("--exp_name", type=str, required=True)
     args = parser.parse_args(args)
 
-    logdir = os.path.join("results", args.exp_name)
-    os.makedirs(logdir, exist_ok=True)
-    logfile = os.path.join(logdir, f"train_log_{args.exp_name}.jsonl")
+    resultsdir = os.path.join("results", args.exp_name)
+    os.makedirs(resultsdir, exist_ok=True)
+    logfile = os.path.join(resultsdir, f"train_log_{args.exp_name}.jsonl")
     logger = setup_logger(log_file=logfile)
     logger.info(f"Logging training info to {logfile}")
 
@@ -87,8 +87,8 @@ def main(args=None) -> None:
     data_dir = os.path.join(f"data/{args.data}")
     logger.info(f"Data directory: {data_dir}")
 
-    ckpt_dir = os.path.join(args.exp_name, f"gpt2-{args.model_size}-{args.exp_name}")
-    logger.info(f"Saving model checkpoints to {args.exp_name}")
+    ckpt_dir = os.path.join(resultsdir, f"gpt2-{args.model_size}-{args.exp_name}")
+    logger.info(f"Saving model checkpoints to {resultsdir}")
 
     train_dataloader = load_data(
         data_dir, "train", args.seq_len, args.seq_len, args.batch_size

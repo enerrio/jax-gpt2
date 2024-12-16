@@ -27,10 +27,6 @@ def normal_init(
     return mean + std * jr.normal(key, shape=shape, dtype=dtype)
 
 
-def zero_init(shape: tuple[int], dtype: jnp.dtype) -> Array:
-    return jnp.zeros(shape, dtype=dtype)
-
-
 def reinit_model_params(
     model: eqx.Module, dtype: jnp.dtype, key: PRNGKeyArray
 ) -> eqx.Module:
@@ -73,7 +69,7 @@ def reinit_model_params(
     ]
     # bias should be 0
     new_biases = [
-        zero_init(s, dtype) for s in b_shapes
+        jnp.zeros(s, dtype=dtype) for s in b_shapes
     ]  # TODO: replace w/ jnp.zeros_like
 
     model = eqx.tree_at(
@@ -232,7 +228,9 @@ class GPTModel(eqx.Module):
     trf_blocks: list[TransformerBlock]
     final_norm: eqx.nn.LayerNorm
 
-    def __init__(self, cfg: dict[str, int | float | bool], dtype: jnp.dtype, key: PRNGKeyArray):
+    def __init__(
+        self, cfg: dict[str, int | float | bool], dtype: jnp.dtype, key: PRNGKeyArray
+    ):
         key1, key2, key3, key4 = jr.split(key, 4)
         tok_embed = eqx.nn.Embedding(cfg["vocab_size"], cfg["emb_dim"], key=key1)
         self.pos_embed = eqx.nn.Embedding(
@@ -240,7 +238,8 @@ class GPTModel(eqx.Module):
         ).weight
         self.drop_emb = eqx.nn.Dropout(cfg["drop_rate"])
         self.trf_blocks = [
-            TransformerBlock(cfg, dtype, keyn) for keyn in jr.split(key3, cfg["n_layers"])
+            TransformerBlock(cfg, dtype, keyn)
+            for keyn in jr.split(key3, cfg["n_layers"])
         ]
         self.final_norm = eqx.nn.LayerNorm(cfg["emb_dim"], dtype=dtype)
         out_head = eqx.nn.Linear(
